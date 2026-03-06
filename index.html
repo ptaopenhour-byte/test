@@ -57,14 +57,12 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
 
-       <style>
+    <style>
         @media print {
-            /* 設定為 A4 橫式，邊緣留 1 公分最安全也最好看 */
             @page { size: A4 landscape; margin: 10mm; }
             body { background: white; margin: 0; padding: 0; }
             .no-print { display: none !important; }
             
-            /* 【重點】讓每一頁變成一個彈性容器，高度設定為紙張高度的 96% */
             .print-only { display: block !important; width: 100%; }
             .page-break { 
                 page-break-after: always; 
@@ -73,7 +71,6 @@
                 flex-direction: column; 
             }
             
-            /* 【重點】讓表格自動長高 (flex-grow: 1)，把 A4 剩下的空間吃滿 */
             table { 
                 width: 100%; 
                 flex-grow: 1; 
@@ -81,27 +78,23 @@
                 table-layout: fixed; 
             }
             
-            /* 置中與自動換行 */
             th, td { 
                 border: 1px solid #000; 
                 text-align: center; 
-                vertical-align: middle; /* 讓文字完美置中 */
+                vertical-align: middle; 
                 font-family: sans-serif; 
                 word-wrap: break-word; 
                 overflow: hidden;
             }
             
             th { background-color: #f3f4f6 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; font-weight: bold; }
-            
-            /* 稍微加寬節次，避免文字太擠 */
             .col-period { width: 65px; } 
-            
             .print-lunch { background-color: #e5e7eb !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; letter-spacing: 2px; font-size: 14px; }
         }
         
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-    </style>     
+    </style>      
    </head>
 <body class="bg-white font-sans text-duo-text selection:bg-duo-green selection:text-white">
     
@@ -113,20 +106,31 @@
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
-        import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+        import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
 
         window.fbModules = {
             initializeApp, getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken,
-            getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot
+            getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, runTransaction
         };
         window.dispatchEvent(new Event('firebaseLoaded'));
     </script>
 
 
+
+
     <!-- React 應用程式邏輯 -->
     <script type="text/babel">
         const { useState, useEffect } = React;
+
+
+        // 密碼雜湊加密函數 (SHA-256)
+        const sha256 = async (message) => {
+            const msgBuffer = new TextEncoder().encode(message);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        };
 
 
         // Firebase 環境偵測與設定
@@ -146,7 +150,6 @@
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'cartreserver-app';
 
 
-        // 加入 order 屬性以預設順序
         const initialData = {
             "Cart 8": { type: "Chromebook", location: "Student Affairs Office", capacity: 30, schedule: {}, notes: "Elevator malfunction, please note", order: 0 },
             "Cart 4": { type: "Chromebook", location: "Student Affairs Office", capacity: 20, schedule: {}, order: 1 },
@@ -155,6 +158,7 @@
         };
 
 
+        // 注意：為了向下相容，密碼維持原設定，新註冊的才會被加密
         const initialUsers = {
             "bianca@school.edu": { name: "Bianca", email: "bianca@school.edu", password: "password123", defaultClass: "11A", customClass: "" },
             "yvonne@school.edu": { name: "Yvonne", email: "yvonne@school.edu", password: "password123", defaultClass: "11B", customClass: "" }
@@ -171,7 +175,7 @@
             { id: 6, time: "14:10-15:00", name: "Period 6" },
             { id: 7, time: "15:20-16:10", name: "Period 7" },
             { id: 8, time: "16:20-17:10", name: "Period 8" }
- ];
+        ];
 
 
         const baseDays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
@@ -198,15 +202,17 @@
 
             const [currentView, setCurrentView] = useState('home');
             const [activeFilter, setActiveFilter] = useState('All');
-            const [activeLocationFilter, setActiveLocationFilter] = useState('All'); // 新增地點過濾
+            const [activeLocationFilter, setActiveLocationFilter] = useState('All'); 
+            const [searchQuery, setSearchQuery] = useState(''); // 新增：搜尋框狀態
             const [selectedCart, setSelectedCart] = useState(null);
             const [adminTab, setAdminTab] = useState('carts');
             
-            const [semesterConfig, setSemesterConfig] = useState({ startDate: '2026-02-23', totalWeeks: 19 });
+            const [semesterConfig, setSemesterConfig] = useState({ startDate: '2026-02-23', totalWeeks: 19, maxAdvanceWeeks: 2 });
             const [tempSemesterConfig, setTempSemesterConfig] = useState({ ...semesterConfig });
 
 
             const [selectedWeek, setSelectedWeek] = useState(1);
+            const [currentRealWeek, setCurrentRealWeek] = useState(1); // 記錄真實週數
             const [allowSaturday, setAllowSaturday] = useState(false);
             const [hasAutoSetWeek, setHasAutoSetWeek] = useState(false);
             const currentDays = allowSaturday ? [...baseDays, "Saturday"] : baseDays;
@@ -224,15 +230,24 @@
             const [regForm, setRegForm] = useState({ name: '', email: '', password: '', classType: '1A', customClass: '' });
             const [adminPwd, setAdminPwd] = useState('');
             
-            const [systemAdminPwd, setSystemAdminPwd] = useState('admin');
+            const [systemAdminPwd, setSystemAdminPwd] = useState('admin'); // 預設 admin，可改成加密版
             const [adminPwdForm, setAdminPwdForm] = useState({ current: '', new: '', confirm: '' });
 
 
-            const [bookingModal, setBookingModal] = useState({ isOpen: false, dayIdx: null, periodId: null, existingBooking: null, isEditing: false });
+            const [bookingModal, setBookingModal] = useState({ isOpen: false, dayIdx: null, periodId: null, existingBooking: null, isEditing: false, isBatch: false });
             const [bookForm, setBookForm] = useState({ classType: '', customClass: '' });
             const [editBookForm, setEditBookForm] = useState({ name: '', email: '', classType: '', customClass: '' });
             const [editCartModal, setEditCartModal] = useState({ isOpen: false, cartName: null, data: null });
             const [printSelection, setPrintSelection] = useState([]);
+
+
+            // 批次預約狀態
+            const [isBatchMode, setIsBatchMode] = useState(false);
+            const [batchSelection, setBatchSelection] = useState([]); // [{dayIdx, periodId, slotId}]
+
+
+            // My Bookings 視圖模式
+            const [myBookingsView, setMyBookingsView] = useState('list'); // 'list' | 'calendar'
 
 
             useEffect(() => {
@@ -307,14 +322,14 @@
                             if (snap.exists()) {
                                 const data = snap.data();
                                 if (data.semesterConfig) {
-                                    setSemesterConfig(data.semesterConfig);
-                                    setTempSemesterConfig(data.semesterConfig);
+                                    setSemesterConfig({ ...data.semesterConfig, maxAdvanceWeeks: data.semesterConfig.maxAdvanceWeeks || 2 });
+                                    setTempSemesterConfig({ ...data.semesterConfig, maxAdvanceWeeks: data.semesterConfig.maxAdvanceWeeks || 2 });
                                 }
                                 if (data.systemAdminPwd) setSystemAdminPwd(data.systemAdminPwd);
                                 if (data.allowSaturday !== undefined) setAllowSaturday(data.allowSaturday);
                             } else {
                                 fb.setDoc(getDocRef('settings', 'main'), {
-                                    semesterConfig: { startDate: '2026-02-23', totalWeeks: 19 },
+                                    semesterConfig: { startDate: '2026-02-23', totalWeeks: 19, maxAdvanceWeeks: 2 },
                                     systemAdminPwd: 'admin',
                                     allowSaturday: false
                                 }).catch(e => {});
@@ -330,8 +345,9 @@
             }, []);
 
 
+            // 計算當前真實週數
             useEffect(() => {
-                if (firebaseReady && !hasAutoSetWeek) {
+                if (firebaseReady) {
                     const now = new Date();
                     const [year, month, day] = semesterConfig.startDate.split('-').map(Number);
                     const start = new Date(year, month - 1, day);
@@ -340,34 +356,39 @@
                     
                     const diffTime = now.getTime() - start.getTime();
                     const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-                    let currentWeek = Math.floor(diffDays / 7) + 1;
+                    let currentWeekCalc = Math.floor(diffDays / 7) + 1;
                     
-                    if (currentWeek < 1) currentWeek = 1;
-                    if (currentWeek > semesterConfig.totalWeeks) currentWeek = semesterConfig.totalWeeks;
+                    if (currentWeekCalc < 1) currentWeekCalc = 1;
+                    if (currentWeekCalc > semesterConfig.totalWeeks) currentWeekCalc = semesterConfig.totalWeeks;
                     
-                    setSelectedWeek(currentWeek);
-                    setHasAutoSetWeek(true); 
+                    setCurrentRealWeek(currentWeekCalc);
+
+
+                    if (!hasAutoSetWeek) {
+                        setSelectedWeek(currentWeekCalc);
+                        setHasAutoSetWeek(true); 
+                    }
                 }
             }, [firebaseReady, semesterConfig, hasAutoSetWeek]);
 
 
+            // 切換週數時清空批次選擇
             useEffect(() => {
                 if (selectedWeek > semesterConfig.totalWeeks) setSelectedWeek(semesterConfig.totalWeeks);
-            }, [semesterConfig.totalWeeks, selectedWeek]);
+                setBatchSelection([]);
+            }, [selectedWeek, semesterConfig.totalWeeks]);
 
 
-
-
-            // 核心排序與過濾邏輯
             const sortedAllCarts = Object.entries(cartData).sort((a, b) => (a[1].order || 0) - (b[1].order || 0));
+            
+            // 結合各種過濾器（包含新加入的搜尋功能）
             const filteredCarts = sortedAllCarts
                 .filter(([name, data]) => activeFilter === 'All' || data.type === activeFilter)
-                .filter(([name, data]) => activeLocationFilter === 'All' || data.location === activeLocationFilter);
+                .filter(([name, data]) => activeLocationFilter === 'All' || data.location === activeLocationFilter)
+                .filter(([name, data]) => name.toLowerCase().includes(searchQuery.toLowerCase()) || (data.notes && data.notes.toLowerCase().includes(searchQuery.toLowerCase())));
             
-            // 動態擷取所有唯一的所在地點
             const locations = ['All', ...Array.from(new Set(Object.values(cartData).map(c => c.location).filter(Boolean)))];
             
-            // 手動排序邏輯 (Admin 專用)
             const moveCart = async (cartName, direction) => {
                 const sortedNames = sortedAllCarts.map(arr => arr[0]);
                 const idx = sortedNames.indexOf(cartName);
@@ -376,11 +397,8 @@
                     [sortedNames[idx - 1], sortedNames[idx]] = [sortedNames[idx], sortedNames[idx - 1]];
                 } else if (direction === 'down' && idx < sortedNames.length - 1) {
                     [sortedNames[idx + 1], sortedNames[idx]] = [sortedNames[idx], sortedNames[idx + 1]];
-                } else {
-                    return; // 無法移動
-                }
+                } else { return; }
                 
-                // 批次寫入新順序到 Firestore
                 for (let i = 0; i < sortedNames.length; i++) {
                     const cName = sortedNames[i];
                     if ((cartData[cName].order || 0) !== i) {
@@ -439,7 +457,9 @@
             const handleAuthSubmit = async (e) => {
                 e.preventDefault();
                 if (authMode === 'admin') {
-                    if (adminPwd === systemAdminPwd) {
+                    // Admin 密碼驗證 (向下相容：允許明文比對或加密比對)
+                    const hashedInput = await sha256(adminPwd);
+                    if (adminPwd === systemAdminPwd || hashedInput === systemAdminPwd) {
                         setIsAdmin(true);
                         setCurrentUser({ name: 'Admin', email: 'admin@school.edu', defaultClass: 'Admin', customClass: '' });
                         setCurrentView('home');
@@ -449,19 +469,24 @@
                     }
                 } else if (authMode === 'login') {
                     const user = usersDB[loginForm.email];
-                    if (user && user.password === loginForm.password) {
-                        setCurrentUser(user);
-                        setCurrentView('home');
-                    } else {
-                        showAlert("Incorrect email or password!\nPlease contact the admin if you forgot it.");
+                    if (user) {
+                        const hashedInput = await sha256(loginForm.password);
+                        // 向下相容機制：舊帳號可能是明文，新帳號是加密文
+                        if (user.password === loginForm.password || user.password === hashedInput) {
+                            setCurrentUser(user);
+                            setCurrentView('home');
+                            return;
+                        }
                     }
+                    showAlert("Incorrect email or password!\nPlease contact the admin if you forgot it.");
                 } else if (authMode === 'register') {
                     if (usersDB[regForm.email]) {
                         showAlert("This email is already registered!");
                         return;
                     }
+                    const hashedPassword = await sha256(regForm.password);
                     const newUser = {
-                        name: regForm.name.trim(), email: regForm.email.trim(), password: regForm.password, defaultClass: regForm.classType, customClass: regForm.customClass
+                        name: regForm.name.trim(), email: regForm.email.trim(), password: hashedPassword, defaultClass: regForm.classType, customClass: regForm.customClass
                     };
                     await dbRefs.fb.setDoc(dbRefs.getDocRef('users', newUser.email), newUser);
                     setCurrentUser(newUser);
@@ -473,11 +498,13 @@
 
             const handleAdminPwdChange = async (e) => {
                 e.preventDefault();
-                if (adminPwdForm.current !== systemAdminPwd) return showAlert("Current password is incorrect!");
+                const hashedCurrent = await sha256(adminPwdForm.current);
+                if (adminPwdForm.current !== systemAdminPwd && hashedCurrent !== systemAdminPwd) return showAlert("Current password is incorrect!");
                 if (adminPwdForm.new !== adminPwdForm.confirm) return showAlert("New passwords do not match!");
                 if (adminPwdForm.new.length < 4) return showAlert("Password must be at least 4 characters long.");
                 
-                await dbRefs.fb.setDoc(dbRefs.getDocRef('settings', 'main'), { systemAdminPwd: adminPwdForm.new }, { merge: true });
+                const hashedNew = await sha256(adminPwdForm.new);
+                await dbRefs.fb.setDoc(dbRefs.getDocRef('settings', 'main'), { systemAdminPwd: hashedNew }, { merge: true });
                 addLog("Change Password", "System", "Administrator password was updated");
                 showAlert("Admin password updated successfully!");
                 setAdminPwdForm({ current: '', new: '', confirm: '' });
@@ -487,7 +514,7 @@
             const handleSemesterConfigSave = async (e) => {
                 e.preventDefault();
                 await dbRefs.fb.setDoc(dbRefs.getDocRef('settings', 'main'), { semesterConfig: tempSemesterConfig }, { merge: true });
-                addLog("Update Config", "System", `Start Date: ${tempSemesterConfig.startDate}, Total Weeks: ${tempSemesterConfig.totalWeeks}`);
+                addLog("Update Config", "System", `Start Date: ${tempSemesterConfig.startDate}, Total Weeks: ${tempSemesterConfig.totalWeeks}, Advance: ${tempSemesterConfig.maxAdvanceWeeks}W`);
                 showAlert("Semester configuration updated successfully!");
             };
 
@@ -506,7 +533,8 @@
 
             const resetUserPassword = (email) => {
                 showConfirm(`Reset password for ${usersDB[email].name} to "123456"?`, async () => {
-                    await dbRefs.fb.setDoc(dbRefs.getDocRef('users', email), { ...usersDB[email], password: "123456" }, { merge: true });
+                    const hashedResetPwd = await sha256("123456");
+                    await dbRefs.fb.setDoc(dbRefs.getDocRef('users', email), { ...usersDB[email], password: hashedResetPwd }, { merge: true });
                     addLog("Reset Password", "System", `Admin reset password for ${email}`);
                     showAlert("Password reset to 123456.");
                 });
@@ -521,27 +549,119 @@
             };
 
 
+            // 處理點擊格子：加入預約期限阻擋與批次選擇機制
             const handleSlotClick = (dayIdx, periodId, existingBooking) => {
                 if (periodId === 'lunch') return; 
-                setBookingModal({ isOpen: true, dayIdx, periodId, existingBooking, isEditing: false });
-                if (!existingBooking && currentUser) {
-                    setBookForm({ classType: currentUser.defaultClass, customClass: currentUser.customClass });
+
+
+                // 檢查預約期限
+                const isPastLimit = !isAdmin && (selectedWeek > currentRealWeek + (semesterConfig.maxAdvanceWeeks || 2));
+                if (isPastLimit) {
+                    showAlert(`⚠️ Booking Limit Exceeded\n\nTo ensure fairness, the system only allows bookings up to ${semesterConfig.maxAdvanceWeeks || 2} week(s) in advance.\nPlease try again closer to your desired date!`);
+                    return;
+                }
+
+
+                if (existingBooking) {
+                    // 如果已經被訂走，點擊就開啟預覽/編輯模式
+                    setBookingModal({ isOpen: true, dayIdx, periodId, existingBooking, isEditing: false, isBatch: false });
+                } else {
+                    // 如果是空位
+                    if (isBatchMode) {
+                        const slotId = `w${selectedWeek}_d${dayIdx}_p${periodId}`;
+                        setBatchSelection(prev => 
+                            prev.some(s => s.slotId === slotId) 
+                                ? prev.filter(s => s.slotId !== slotId) 
+                                : [...prev, { dayIdx, periodId, slotId }]
+                        );
+                    } else {
+                        // 單筆預約模式
+                        setBookForm({ classType: currentUser.defaultClass, customClass: currentUser.customClass });
+                        setBookingModal({ isOpen: true, dayIdx, periodId, existingBooking: null, isEditing: false, isBatch: false });
+                    }
                 }
             };
 
 
-            const submitBooking = async () => {
-                const slotId = `w${selectedWeek}_d${bookingModal.dayIdx}_p${bookingModal.periodId}`;
+            // 執行真正的交易寫入邏輯
+            const executeBookingTransaction = async (slotsToBook, finalClass) => {
+                const cartRef = dbRefs.getDocRef('carts', selectedCart);
+
+
+                try {
+                    await dbRefs.fb.runTransaction(dbRefs.db, async (transaction) => {
+                        const cartDoc = await transaction.get(cartRef);
+                        if (!cartDoc.exists()) throw "CART_NOT_FOUND";
+
+
+                        const currentData = cartDoc.data();
+                        const currentSchedule = currentData.schedule || {};
+
+
+                        // 檢查所有想要預約的格子是否已被搶走
+                        for (const slot of slotsToBook) {
+                            if (currentSchedule[slot.slotId]) {
+                                throw "SLOT_ALREADY_TAKEN"; 
+                            }
+                            currentSchedule[slot.slotId] = { 
+                                name: currentUser.name, 
+                                email: currentUser.email, 
+                                className: finalClass, 
+                                ownerEmail: currentUser.email 
+                            };
+                        }
+
+
+                        transaction.update(cartRef, { schedule: currentSchedule });
+                    });
+
+
+                    // 成功後的收尾
+                    const details = slotsToBook.length === 1 
+                        ? `Week ${selectedWeek} ${currentDays[slotsToBook[0].dayIdx]} P${slotsToBook[0].periodId} (${finalClass})`
+                        : `Batch booked ${slotsToBook.length} slots for Week ${selectedWeek} (${finalClass})`;
+                    
+                    addLog("Add Booking", selectedCart, details);
+                    setBookingModal({ isOpen: false, dayIdx: null, periodId: null, existingBooking: null, isEditing: false, isBatch: false });
+                    setBatchSelection([]);
+                    setIsBatchMode(false);
+                    
+                } catch (error) {
+                    if (error === "SLOT_ALREADY_TAKEN") {
+                        showAlert("慢了一步！你選的時段中，有部分已被別人搶走囉，請重新選擇。");
+                    } else if (error === "CART_NOT_FOUND") {
+                        showAlert("找不到該設備，可能已被管理員刪除。");
+                    } else {
+                        console.error("Transaction failed: ", error);
+                        showAlert("預約發生錯誤，請稍後檢查網路連線再試。");
+                    }
+                    setBookingModal({ isOpen: false, dayIdx: null, periodId: null, existingBooking: null, isEditing: false, isBatch: false });
+                }
+            };
+
+
+            // 送出前檢查是否有跨車「衝堂」
+            const checkConflictsAndSubmit = async () => {
                 const finalClass = bookForm.classType === 'Other (Specify)' ? bookForm.customClass : bookForm.classType;
                 
-                const updatedSchedule = { ...cartData[selectedCart].schedule };
-                updatedSchedule[slotId] = { name: currentUser.name, email: currentUser.email, className: finalClass, ownerEmail: currentUser.email };
-
-
-                await dbRefs.fb.setDoc(dbRefs.getDocRef('carts', selectedCart), { ...cartData[selectedCart], schedule: updatedSchedule });
+                // 整理出這次想預約的所有 Slot ID
+                const slotsToBook = bookingModal.isBatch ? batchSelection : [{ dayIdx: bookingModal.dayIdx, periodId: bookingModal.periodId, slotId: `w${selectedWeek}_d${bookingModal.dayIdx}_p${bookingModal.periodId}` }];
                 
-                addLog("Add Booking", selectedCart, `Week ${selectedWeek} ${currentDays[bookingModal.dayIdx]} P${bookingModal.periodId} (${finalClass})`);
-                setBookingModal({ isOpen: false, dayIdx: null, periodId: null, existingBooking: null, isEditing: false });
+                // 比對本地端資料：這個班級在同一個時間，是不是已經借了其他車？
+                const conflictingSlots = slotsToBook.filter(slot => {
+                    return Object.entries(cartData).some(([cName, cData]) => {
+                        return cName !== selectedCart && cData.schedule && cData.schedule[slot.slotId]?.className === finalClass;
+                    });
+                });
+
+
+                if (conflictingSlots.length > 0) {
+                    showConfirm(`[Duplicate Booking Warning]\nClass "${finalClass}" has already reserved other equipment during this time slot.\nAre you sure you want to proceed with this additional booking?`, () => {
+                        executeBookingTransaction(slotsToBook, finalClass);
+                    });
+                } else {
+                    executeBookingTransaction(slotsToBook, finalClass);
+                }
             };
 
 
@@ -558,7 +678,7 @@
                 const actionName = isAdmin ? "Force Cancel" : "Cancel Booking";
                 addLog(actionName, selectedCart, `Week ${selectedWeek} ${currentDays[bookingModal.dayIdx]} P${bookingModal.periodId} (${existing.name})`);
                 
-                setBookingModal({ isOpen: false, dayIdx: null, periodId: null, existingBooking: null, isEditing: false });
+                setBookingModal({ isOpen: false, dayIdx: null, periodId: null, existingBooking: null, isEditing: false, isBatch: false });
             };
 
 
@@ -585,7 +705,7 @@
                 await dbRefs.fb.setDoc(dbRefs.getDocRef('carts', selectedCart), { ...cartData[selectedCart], schedule: updatedSchedule });
                 
                 addLog("Admin Edit", selectedCart, `Week ${selectedWeek} ${currentDays[bookingModal.dayIdx]} P${bookingModal.periodId} (Updated: ${editBookForm.name})`);
-                setBookingModal({ isOpen: false, dayIdx: null, periodId: null, existingBooking: null, isEditing: false });
+                setBookingModal({ isOpen: false, dayIdx: null, periodId: null, existingBooking: null, isEditing: false, isBatch: false });
             };
 
 
@@ -597,7 +717,6 @@
                 const newData = {
                     type: formData.get('type'), location: formData.get('location'), capacity: parseInt(formData.get('capacity')), notes: formData.get('notes'),
                     schedule: oldName && cartData[oldName] ? cartData[oldName].schedule : {},
-                    // 若是新設備，將 order 設為當前總數以排在最後面
                     order: oldName && cartData[oldName] && cartData[oldName].order !== undefined ? cartData[oldName].order : Object.keys(cartData).length
                 };
 
@@ -672,7 +791,6 @@
             };
 
 
-            // Firebase Error Screen (Duolingo Style)
             if (firebaseReady === 'auth-error') {
                 return (
                     <div className="min-h-screen bg-duo-grayLight flex flex-col items-center justify-center p-4">
@@ -706,7 +824,7 @@
             }
 
 
-            // ================= LOGIN SCREEN (Duolingo Style) =================
+            // ================= LOGIN SCREEN =================
             if (!currentUser && !isAdmin) {
                 return (
                     <div className="min-h-screen bg-duo-grayLight flex items-center justify-center p-4">
@@ -715,7 +833,7 @@
                                 <div className="inline-block bg-white p-4 rounded-3xl border-2 border-duo-grayBorder shadow-[0_6px_0_0_#e5e5e5] mb-4">
                                     <i className="fa-solid fa-laptop-chromebook text-duo-green text-5xl"></i>
                                 </div>
-                                <h1 className="text-3xl font-extrabold text-duo-text tracking-tight">Equipment Hub</h1>
+                                <h1 className="text-3xl font-extrabold text-duo-text tracking-tight">IBSH Chromebooks</h1>
                                 <p className="text-duo-text/60 font-bold mt-2">{authMode === 'login' ? 'Let\'s get booking!' : authMode === 'register' ? 'Create an account' : 'Admin Access'}</p>
                             </div>
 
@@ -783,15 +901,15 @@
             }
 
 
-            // ================= MAIN APP (Duolingo Style) =================
+            // ================= MAIN APP =================
             return (
                 <div className="min-h-screen bg-[#ffffff]">
                     {/* Header */}
-                    <header className="bg-white border-b-2 border-duo-grayBorder sticky top-0 z-10 no-print">
+                    <header className="bg-white border-b-2 border-duo-grayBorder sticky top-0 z-50 no-print">
                         <div className="max-w-7xl mx-auto px-4 py-4 flex flex-wrap justify-between items-center gap-4">
                             <div className="flex items-center space-x-3 cursor-pointer group" onClick={() => setCurrentView('home')}>
                                 <i className="fa-solid fa-cube text-duo-green text-3xl group-hover:scale-110 transition-transform"></i>
-                                <h1 className="text-2xl font-extrabold text-duo-green tracking-tight hidden sm:block">IBSH Chromebook Carts Reservation</h1>
+                                <h1 className="text-2xl font-extrabold text-duo-green tracking-tight hidden sm:block">IBSH Chromebooks</h1>
                             </div>
                             
                             <div className="flex items-center gap-3">
@@ -813,7 +931,7 @@
                                 
                                 {/* User Profile Pill */}
                                 <div className="flex items-center ml-2 border-2 border-duo-grayBorder rounded-2xl h-[44px] overflow-hidden bg-duo-grayLight">
-                                    <div className="px-4 font-extrabold text-duo-blue text-sm flex items-center h-full">
+                                    <div className="px-4 font-extrabold text-duo-blue text-sm flex items-center h-full max-w-[120px] truncate">
                                         <i className={`fa-solid ${isAdmin ? 'fa-shield-halved text-duo-yellow' : 'fa-user'} mr-2`}></i>
                                         {currentUser.name}
                                     </div>
@@ -838,6 +956,9 @@
                                         </select>
                                         <i className="fa-solid fa-chevron-down absolute right-4 top-1/2 -translate-y-1/2 text-duo-grayBorder pointer-events-none text-xs"></i>
                                     </div>
+                                    {!isAdmin && selectedWeek > currentRealWeek + (semesterConfig.maxAdvanceWeeks || 2) && (
+                                        <span className="text-xs font-bold text-duo-red bg-red-50 px-2 py-1 rounded-lg border border-red-200"><i className="fa-solid fa-lock mr-1"></i>Exceeds limit</span>
+                                    )}
                                 </div>
                                 {isAdmin && (
                                     <div className="flex items-center">
@@ -862,10 +983,14 @@
                         {/* --- View: My Bookings --- */}
                         {currentView === 'my-bookings' && (
                             <div className="animate-[fadeIn_0.3s_ease-out]">
-                                <div className="mb-8 border-b-2 border-duo-grayBorder pb-6 flex items-center justify-between">
+                                <div className="mb-8 border-b-2 border-duo-grayBorder pb-6 flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
                                     <div>
                                         <h2 className="text-3xl font-extrabold text-duo-text tracking-tight">My Bookings</h2>
                                         <p className="text-gray-500 font-bold mt-2">Manage all your reserved equipment slots here.</p>
+                                    </div>
+                                    <div className="flex bg-duo-grayLight rounded-xl border-2 border-duo-grayBorder p-1">
+                                        <button onClick={() => setMyBookingsView('list')} className={`px-4 py-2 rounded-lg font-extrabold text-sm transition-all ${myBookingsView === 'list' ? 'bg-white shadow-sm text-duo-text' : 'text-gray-400 hover:text-duo-text'}`}><i className="fa-solid fa-list mr-2"></i>List View</button>
+                                        <button onClick={() => setMyBookingsView('calendar')} className={`px-4 py-2 rounded-lg font-extrabold text-sm transition-all ${myBookingsView === 'calendar' ? 'bg-white shadow-sm text-duo-text' : 'text-gray-400 hover:text-duo-text'}`}><i className="fa-solid fa-calendar-day mr-2"></i>Calendar</button>
                                     </div>
                                 </div>
 
@@ -882,47 +1007,105 @@
                                         </button>
                                     </div>
                                 ) : (
-                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                                        {getMyBookings().map((b, idx) => {
-                                            const targetPeriod = periods.find(p => p.id == b.periodId);
-                                            return (
-                                                <div key={idx} className="bg-white rounded-3xl border-2 border-duo-grayBorder shadow-[0_6px_0_0_#e5e5e5] p-5 flex flex-col relative overflow-hidden group hover:border-duo-blue transition-colors">
-                                                    <div className="absolute top-0 left-0 w-2 h-full bg-duo-blue"></div>
-                                                    
-                                                    <div className="flex justify-between items-start pl-2 mb-3">
-                                                        <div>
-                                                            <h3 className="font-extrabold text-xl text-duo-text flex items-center">
-                                                                {getIcon(cartData[b.cartName].type)}
-                                                                <span className="ml-3">{b.cartName}</span>
-                                                            </h3>
+                                    myBookingsView === 'list' ? (
+                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                                            {getMyBookings().map((b, idx) => {
+                                                const targetPeriod = periods.find(p => p.id == b.periodId);
+                                                return (
+                                                    <div key={idx} className="bg-white rounded-3xl border-2 border-duo-grayBorder shadow-[0_6px_0_0_#e5e5e5] p-5 flex flex-col relative overflow-hidden group hover:border-duo-blue transition-colors">
+                                                        <div className="absolute top-0 left-0 w-2 h-full bg-duo-blue"></div>
+                                                        <div className="flex justify-between items-start pl-2 mb-3">
+                                                            <div>
+                                                                <h3 className="font-extrabold text-xl text-duo-text flex items-center">
+                                                                    {getIcon(cartData[b.cartName].type)}
+                                                                    <span className="ml-3">{b.cartName}</span>
+                                                                </h3>
+                                                            </div>
+                                                            <span className="bg-blue-50 text-duo-blue text-xs px-2.5 py-1 rounded-lg font-extrabold uppercase tracking-wider border-2 border-blue-100">
+                                                                {b.className}
+                                                            </span>
                                                         </div>
-                                                        <span className="bg-blue-50 text-duo-blue text-xs px-2.5 py-1 rounded-lg font-extrabold uppercase tracking-wider border-2 border-blue-100">
-                                                            {b.className}
-                                                        </span>
+
+
+                                                        <div className="pl-2 space-y-2 mb-6">
+                                                            <div className="flex items-center text-sm font-bold text-gray-500">
+                                                                <div className="w-6"><i className="fa-regular fa-calendar text-gray-400"></i></div>
+                                                                <span className="bg-gray-100 px-2 py-0.5 rounded-md mr-2 text-duo-text">Wk {b.week}</span> 
+                                                                {currentDays[b.dayIdx]} ({getDateForDayIdx(b.week, b.dayIdx)})
+                                                            </div>
+                                                            <div className="flex items-center text-sm font-bold text-gray-500">
+                                                                <div className="w-6"><i className="fa-regular fa-clock text-gray-400"></i></div>
+                                                                <span className="text-duo-text">{targetPeriod ? targetPeriod.name : `Period ${b.periodId}`}</span>
+                                                                <span className="text-xs ml-2">({targetPeriod ? targetPeriod.time : ''})</span>
+                                                            </div>
+                                                        </div>
+
+
+                                                        <button onClick={() => cancelBookingFromList(b.cartName, b.slotId, b.className)} className="mt-auto w-full bg-white text-duo-red font-extrabold uppercase py-3 rounded-xl border-2 border-duo-grayBorder shadow-[0_4px_0_0_#e5e5e5] hover:bg-red-50 hover:border-red-200 active:shadow-none active:translate-y-[4px] transition-all flex items-center justify-center">
+                                                            <i className="fa-solid fa-trash-can mr-2"></i> Cancel
+                                                        </button>
                                                     </div>
-
-
-                                                    <div className="pl-2 space-y-2 mb-6">
-                                                        <div className="flex items-center text-sm font-bold text-gray-500">
-                                                            <div className="w-6"><i className="fa-regular fa-calendar text-gray-400"></i></div>
-                                                            <span className="bg-gray-100 px-2 py-0.5 rounded-md mr-2 text-duo-text">Wk {b.week}</span> 
-                                                            {currentDays[b.dayIdx]} ({getDateForDayIdx(b.week, b.dayIdx)})
-                                                        </div>
-                                                        <div className="flex items-center text-sm font-bold text-gray-500">
-                                                            <div className="w-6"><i className="fa-regular fa-clock text-gray-400"></i></div>
-                                                            <span className="text-duo-text">{targetPeriod ? targetPeriod.name : `Period ${b.periodId}`}</span>
-                                                            <span className="text-xs ml-2">({targetPeriod ? targetPeriod.time : ''})</span>
-                                                        </div>
-                                                    </div>
-
-
-                                                    <button onClick={() => cancelBookingFromList(b.cartName, b.slotId, b.className)} className="mt-auto w-full bg-white text-duo-red font-extrabold uppercase py-3 rounded-xl border-2 border-duo-grayBorder shadow-[0_4px_0_0_#e5e5e5] hover:bg-red-50 hover:border-red-200 active:shadow-none active:translate-y-[4px] transition-all flex items-center justify-center">
-                                                        <i className="fa-solid fa-trash-can mr-2"></i> Cancel
-                                                    </button>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    ) : (
+                                        <div className="bg-white rounded-[2rem] border-2 border-duo-grayBorder shadow-duo-card overflow-hidden">
+                                            <div className="overflow-x-auto p-4 custom-scrollbar">
+                                                <div className="mb-4 text-center font-extrabold text-duo-text text-xl">Week {selectedWeek} Schedule</div>
+                                                <table className="w-full min-w-[700px] border-separate border-spacing-2">
+                                                    <thead>
+                                                        <tr>
+                                                            <th className="p-2 w-32 text-center font-extrabold text-gray-400 uppercase text-sm border-b-2 border-duo-grayBorder sticky left-0 bg-white z-20">Period</th>
+                                                            {currentDays.map((d, dayIdx) => (
+                                                                <th key={d} className="p-2 text-center font-extrabold text-duo-text uppercase text-sm border-b-2 border-duo-grayBorder">
+                                                                    <div className="flex flex-col items-center">
+                                                                        <span>{d}</span>
+                                                                        <span className="text-[11px] text-gray-400 mt-1 font-bold">{getDateForDayIdx(selectedWeek, dayIdx)}</span>
+                                                                    </div>
+                                                                </th>
+                                                            ))}
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {periods.map((period) => (
+                                                            <tr key={period.id}>
+                                                                <td className="p-2 align-middle sticky left-0 bg-white z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">
+                                                                    <div className="flex flex-col items-center justify-center bg-duo-grayLight rounded-2xl h-[72px] border-2 border-duo-grayBorder">
+                                                                        <span className="font-extrabold text-duo-text text-sm">{period.name}</span>
+                                                                    </div>
+                                                                </td>
+                                                                {currentDays.map((day, dayIdx) => {
+                                                                    if (period.id === 'lunch') return <td key={dayIdx} className="p-2 align-middle"><div className="bg-gray-50 rounded-2xl h-[72px]"></div></td>;
+                                                                    
+                                                                    const slotId = `w${selectedWeek}_d${dayIdx}_p${period.id}`;
+                                                                    // 尋找這個時段我有借了哪些車 (可能同時借兩台給不同班級)
+                                                                    const myCartsThisSlot = Object.entries(cartData).filter(([cName, cData]) => cData.schedule && cData.schedule[slotId]?.ownerEmail === currentUser.email);
+                                                                    
+                                                                    return (
+                                                                        <td key={dayIdx} className="p-2 align-middle text-center relative">
+                                                                            {myCartsThisSlot.length > 0 ? (
+                                                                                <div className="flex flex-col gap-1">
+                                                                                    {myCartsThisSlot.map(([cName, cData]) => (
+                                                                                        <div key={cName} className="bg-duo-blue text-white rounded-xl p-2 shadow-[0_3px_0_0_#1899d6] flex flex-col justify-center items-center cursor-pointer hover:bg-[#1899d6] active:translate-y-[3px] active:shadow-none" onClick={() => cancelBookingFromList(cName, slotId, cData.schedule[slotId].className)}>
+                                                                                            <span className="font-extrabold text-xs truncate w-full">{cName}</span>
+                                                                                            <span className="text-[10px] bg-black/20 px-1.5 rounded-md truncate">{cData.schedule[slotId].className}</span>
+                                                                                        </div>
+                                                                                    ))}
+                                                                                </div>
+                                                                            ) : (
+                                                                                <div className="w-full h-[72px] bg-gray-50 border-2 border-dashed border-gray-200 rounded-2xl flex items-center justify-center">
+                                                                                </div>
+                                                                            )}
+                                                                        </td>
+                                                                    );
+                                                                })}
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    )
                                 )}
                             </div>
                         )}
@@ -936,7 +1119,23 @@
                                         <h2 className="text-3xl font-extrabold text-duo-text tracking-tight">Choose Equipment</h2>
                                     </div>
                                     <div className="flex flex-wrap items-center gap-3">
-                                        <div className="flex gap-2 overflow-x-auto hide-scrollbar py-2">
+                                        
+                                        {/* 新增：搜尋框 */}
+                                        <div className="relative">
+                                            <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
+                                                <i className="fa-solid fa-search text-gray-400"></i>
+                                            </div>
+                                            <input 
+                                                type="text" 
+                                                placeholder="Search cart..." 
+                                                value={searchQuery}
+                                                onChange={(e) => setSearchQuery(e.target.value)}
+                                                className="w-full sm:w-48 pl-10 pr-4 py-2.5 bg-white border-2 border-duo-grayBorder rounded-2xl font-bold text-duo-text outline-none focus:border-duo-blue transition-colors text-sm placeholder-gray-400"
+                                            />
+                                        </div>
+
+
+                                        <div className="flex gap-2 overflow-x-auto hide-scrollbar py-2 border-l-2 border-duo-grayBorder pl-3">
                                             {['All', 'Chromebook', 'iPad', 'PC Lab'].map(filter => (
                                                 <button key={filter} onClick={() => setActiveFilter(filter)} className={`px-5 py-2.5 rounded-2xl font-extrabold uppercase tracking-wider text-sm transition-all whitespace-nowrap ${activeFilter === filter ? 'bg-duo-blue/10 text-duo-blue border-2 border-duo-blue' : 'bg-white text-gray-400 border-2 border-duo-grayBorder hover:bg-gray-50'}`}>
                                                     {filter}
@@ -944,7 +1143,6 @@
                                             ))}
                                         </div>
                                         
-                                        {/* Location Filter Dropdown */}
                                         <div className="relative border-l-2 border-duo-grayBorder pl-3">
                                             <select value={activeLocationFilter} onChange={e => setActiveLocationFilter(e.target.value)} className="appearance-none bg-white border-2 border-duo-grayBorder rounded-2xl pl-4 pr-10 py-2.5 font-extrabold text-gray-500 hover:text-duo-text outline-none cursor-pointer hover:bg-gray-50 transition-colors text-sm uppercase tracking-wider max-w-[200px] truncate">
                                                 {locations.map(loc => (
@@ -959,7 +1157,7 @@
 
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                                     {filteredCarts.map(([name, data]) => (
-                                        <div key={name} onClick={() => { setSelectedCart(name); setCurrentView('schedule'); }} className="bg-white rounded-3xl border-2 border-duo-grayBorder shadow-duo-card p-6 hover:-translate-y-1 hover:shadow-[0_8px_0_0_#e5e5e5] active:translate-y-[4px] active:shadow-none cursor-pointer transition-all flex flex-col group">
+                                        <div key={name} onClick={() => { setSelectedCart(name); setCurrentView('schedule'); setIsBatchMode(false); setBatchSelection([]); }} className="bg-white rounded-3xl border-2 border-duo-grayBorder shadow-duo-card p-6 hover:-translate-y-1 hover:shadow-[0_8px_0_0_#e5e5e5] active:translate-y-[4px] active:shadow-none cursor-pointer transition-all flex flex-col group">
                                             <div className="flex justify-between items-start mb-4">
                                                 {getIcon(data.type)}
                                                 <span className="bg-duo-grayLight text-gray-500 text-xs px-3 py-1.5 rounded-xl font-extrabold border-2 border-duo-grayBorder uppercase tracking-wider">{data.capacity} Devices</span>
@@ -982,13 +1180,22 @@
                         {currentView === 'schedule' && selectedCart && (
                             <div className="animate-[fadeIn_0.3s_ease-out]">
                                 <div className="mb-6 flex items-center justify-between">
-                                    <button onClick={() => { setSelectedCart(null); setCurrentView('home'); }} className="text-gray-400 font-extrabold uppercase tracking-wider hover:text-duo-text transition-colors flex items-center border-2 border-duo-grayBorder px-4 py-2 rounded-xl bg-white hover:bg-gray-50">
+                                    <button onClick={() => { setSelectedCart(null); setCurrentView('home'); setIsBatchMode(false); setBatchSelection([]); }} className="text-gray-400 font-extrabold uppercase tracking-wider hover:text-duo-text transition-colors flex items-center border-2 border-duo-grayBorder px-4 py-2 rounded-xl bg-white hover:bg-gray-50">
                                         <i className="fa-solid fa-arrow-left mr-2"></i> Back
                                     </button>
+                                    
+                                    {/* 批次預約開關 */}
+                                    <div className="flex items-center space-x-3 bg-white px-4 py-2 rounded-xl border-2 border-duo-grayBorder">
+                                        <span className="text-sm font-extrabold text-duo-text uppercase tracking-wider">Batch Mode</span>
+                                        <div className="relative cursor-pointer" onClick={() => { setIsBatchMode(!isBatchMode); setBatchSelection([]); }}>
+                                            <div className={`block w-12 h-6 rounded-full border-2 transition-colors ${isBatchMode ? 'bg-duo-blue border-duo-blueDark' : 'bg-gray-200 border-gray-300'}`}></div>
+                                            <div className={`absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform ${isBatchMode ? 'transform translate-x-6' : ''}`}></div>
+                                        </div>
+                                    </div>
                                 </div>
 
 
-                                <div className="bg-white rounded-[2rem] border-2 border-duo-grayBorder shadow-duo-card overflow-hidden">
+                                <div className="bg-white rounded-[2rem] border-2 border-duo-grayBorder shadow-duo-card overflow-hidden relative">
                                     <div className="p-6 border-b-2 border-duo-grayBorder bg-duo-grayLight flex flex-wrap items-center gap-4">
                                         {getIcon(cartData[selectedCart].type)}
                                         <div>
@@ -998,11 +1205,12 @@
                                     </div>
 
 
-                                    <div className="overflow-x-auto p-4">
+                                    <div className="overflow-x-auto p-4 custom-scrollbar">
                                         <table className="w-full min-w-[700px] border-separate border-spacing-2">
                                             <thead>
                                                 <tr>
-                                                    <th className="p-2 w-32 sm:w-40 text-center font-extrabold text-gray-400 uppercase tracking-wider text-sm border-b-2 border-duo-grayBorder pb-4 align-bottom">
+                                                    {/* 手機版固定第一欄 */}
+                                                    <th className="p-2 w-32 sm:w-40 text-center font-extrabold text-gray-400 uppercase tracking-wider text-sm border-b-2 border-duo-grayBorder pb-4 align-bottom sticky left-0 bg-white z-20 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">
                                                         <div className="flex items-center justify-center h-full pb-1">Period</div>
                                                     </th>
                                                     {currentDays.map((day, dayIdx) => (
@@ -1018,7 +1226,8 @@
                                             <tbody>
                                                 {periods.map((period, pIdx) => (
                                                     <tr key={period.id}>
-                                                        <td className="p-2 align-middle">
+                                                        {/* 手機版固定第一欄 */}
+                                                        <td className="p-2 align-middle sticky left-0 bg-white z-10 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.1)]">
                                                             <div className="flex flex-col items-center justify-center bg-duo-grayLight rounded-2xl h-[72px] border-2 border-duo-grayBorder">
                                                                 <span className="font-extrabold text-duo-text text-sm">{period.name}</span>
                                                                 <span className="text-[10px] font-bold text-gray-400 mt-1">{period.time}</span>
@@ -1039,13 +1248,15 @@
                                                             const slotId = `w${selectedWeek}_d${dayIdx}_p${period.id}`;
                                                             const bookingInfo = cartData[selectedCart].schedule[slotId];
                                                             const isMyBooking = bookingInfo && bookingInfo.ownerEmail === currentUser.email;
+                                                            const isSelectedBatch = batchSelection.some(s => s.slotId === slotId);
 
 
                                                             return (
                                                                 <td key={dayIdx} className="p-2 align-middle">
                                                                     {bookingInfo ? (
-                                                                        <div onClick={() => handleSlotClick(dayIdx, period.id, bookingInfo)}
+                                                                        <div onClick={() => !isBatchMode && handleSlotClick(dayIdx, period.id, bookingInfo)}
                                                                             className={`w-full h-[72px] rounded-2xl flex flex-col items-center justify-center p-2 transition-all ${
+                                                                                isBatchMode ? 'bg-gray-100 text-gray-400 border-2 border-duo-grayBorder opacity-50 cursor-not-allowed' :
                                                                                 isMyBooking || isAdmin
                                                                                 ? 'bg-duo-blue text-white shadow-[0_4px_0_0_#1899d6] cursor-pointer hover:bg-[#1899d6] active:shadow-none active:translate-y-[4px]'
                                                                                 : 'bg-gray-100 text-gray-400 border-2 border-duo-grayBorder cursor-not-allowed opacity-80'
@@ -1056,10 +1267,20 @@
                                                                         </div>
                                                                     ) : (
                                                                         <div onClick={() => handleSlotClick(dayIdx, period.id, null)}
-                                                                            className="w-full h-[72px] bg-transparent border-2 border-dashed border-gray-300 rounded-2xl flex flex-col items-center justify-center text-gray-300 cursor-pointer hover:bg-duo-green/10 hover:border-duo-green hover:text-duo-green transition-colors group"
+                                                                            className={`w-full h-[72px] rounded-2xl flex flex-col items-center justify-center cursor-pointer transition-all group ${
+                                                                                isSelectedBatch 
+                                                                                ? 'bg-duo-green/20 border-2 border-duo-green text-duo-greenDark shadow-[inset_0_0_0_2px_#58cc02]'
+                                                                                : 'bg-transparent border-2 border-dashed border-gray-300 text-gray-300 hover:bg-duo-green/10 hover:border-duo-green hover:text-duo-green'
+                                                                            }`}
                                                                         >
-                                                                            <i className="fa-solid fa-plus text-xl mb-1 opacity-0 group-hover:opacity-100 transition-opacity"></i>
-                                                                            <span className="text-[10px] font-extrabold uppercase tracking-wider opacity-0 group-hover:opacity-100 transition-opacity">Book</span>
+                                                                            {isSelectedBatch ? (
+                                                                                <i className="fa-solid fa-check text-2xl text-duo-green"></i>
+                                                                            ) : (
+                                                                                <>
+                                                                                    <i className="fa-solid fa-plus text-xl mb-1 opacity-0 group-hover:opacity-100 transition-opacity"></i>
+                                                                                    <span className="text-[10px] font-extrabold uppercase tracking-wider opacity-0 group-hover:opacity-100 transition-opacity">Book</span>
+                                                                                </>
+                                                                            )}
                                                                         </div>
                                                                     )}
                                                                 </td>
@@ -1071,6 +1292,17 @@
                                         </table>
                                     </div>
                                 </div>
+                            </div>
+                        )}
+
+
+                        {/* 批次預約浮動按鈕 */}
+                        {isBatchMode && batchSelection.length > 0 && (
+                            <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-gray-900/90 backdrop-blur-md px-6 py-4 rounded-full shadow-2xl flex items-center gap-6 z-50 animate-[bounceIn_0.3s_cubic-bezier(0.175,0.885,0.32,1.275)] border-2 border-gray-700">
+                                <span className="font-extrabold text-white"><span className="text-duo-green">{batchSelection.length}</span> Slots Selected</span>
+                                <button onClick={() => { setBookForm({ classType: currentUser.defaultClass, customClass: currentUser.customClass }); setBookingModal({ isOpen: true, isBatch: true, existingBooking: null, isEditing: false }); }} className="bg-duo-green text-white px-6 py-2.5 rounded-full font-extrabold uppercase tracking-wider text-sm hover:bg-duo-greenDark active:scale-95 transition-all shadow-[0_3px_0_0_#58a700]">
+                                    Book Now
+                                </button>
                             </div>
                         )}
 
@@ -1181,7 +1413,10 @@
                                                 <div className="bg-duo-grayLight border-2 border-duo-grayBorder rounded-[2rem] p-6 mb-8">
                                                     <form onSubmit={handleSemesterConfigSave} className="space-y-4">
                                                         <div><label className="block text-xs font-extrabold text-gray-500 uppercase tracking-wider mb-2">Start Date (Week 1)</label><input required type="date" value={tempSemesterConfig.startDate} onChange={e => setTempSemesterConfig({...tempSemesterConfig, startDate: e.target.value})} className="w-full px-4 py-3 bg-white border-2 border-duo-grayBorder rounded-xl focus:border-duo-blue outline-none font-bold text-duo-text" /></div>
-                                                        <div><label className="block text-xs font-extrabold text-gray-500 uppercase tracking-wider mb-2">Total Weeks</label><input required type="number" min="1" max="52" value={tempSemesterConfig.totalWeeks} onChange={e => setTempSemesterConfig({...tempSemesterConfig, totalWeeks: Number(e.target.value)})} className="w-full px-4 py-3 bg-white border-2 border-duo-grayBorder rounded-xl focus:border-duo-blue outline-none font-bold text-duo-text" /></div>
+                                                        <div className="grid grid-cols-2 gap-4">
+                                                            <div><label className="block text-xs font-extrabold text-gray-500 uppercase tracking-wider mb-2">Total Weeks</label><input required type="number" min="1" max="52" value={tempSemesterConfig.totalWeeks} onChange={e => setTempSemesterConfig({...tempSemesterConfig, totalWeeks: Number(e.target.value)})} className="w-full px-4 py-3 bg-white border-2 border-duo-grayBorder rounded-xl focus:border-duo-blue outline-none font-bold text-duo-text" /></div>
+                                                            <div><label className="block text-xs font-extrabold text-gray-500 uppercase tracking-wider mb-2">Max Advance (Weeks)</label><input required type="number" min="1" max="52" value={tempSemesterConfig.maxAdvanceWeeks || 2} onChange={e => setTempSemesterConfig({...tempSemesterConfig, maxAdvanceWeeks: Number(e.target.value)})} title="老師最多可以提前幾週預約" className="w-full px-4 py-3 bg-white border-2 border-duo-grayBorder rounded-xl focus:border-duo-blue outline-none font-bold text-duo-text" /></div>
+                                                        </div>
                                                         <button type="submit" className="w-full mt-2 bg-duo-green text-white font-extrabold uppercase py-3 rounded-2xl shadow-duo-green active:shadow-none active:translate-y-[4px] transition-all tracking-wider">Save Config</button>
                                                     </form>
                                                 </div>
@@ -1247,30 +1482,27 @@
 <div className="hidden print-only w-full">
     {printSelection.map((cartName) => (
         <div key={cartName} className="page-break w-full">
-            <div className="text-center mb-4">
+            <div className="text-center mb-2">
                 <h2 className="text-2xl font-bold">{cartName} Reservation List</h2>
                 <p className="text-sm mt-1">Week {selectedWeek} ( {getWeekDateRange(selectedWeek, allowSaturday)} )</p>
             </div>
-            {/* 加上 text-xs 讓字體稍微縮小，以容納更多欄位 */}
-            <table className="w-full text-xs" style={{ tableLayout: 'auto' }}>
+            
+            <table className="w-full text-xs">
                 <thead>
                     <tr>
-                        {/* 節次標題跨兩列 */}
-                        <th className="col-period" rowSpan="2" style={{ width: '60px' }}>Period</th>
+                        <th className="col-period" rowSpan="2">Period</th>
                         {currentDays.map((d, dayIdx) => (
-                            /* 每天的標題跨三欄 (colSpan="3") */
-                            <th key={d} colSpan="3" className="bg-gray-100">
-                                {d} <span style={{fontSize:'12px', fontWeight:'normal', color:'#666'}}>{getDateForDayIdx(selectedWeek, dayIdx)}</span>
+                            <th key={d} colSpan="3" className="py-1">
+                                <span className="text-[14px]">{d}</span> <span style={{fontSize:'11px', fontWeight:'normal', color:'#666'}}>{getDateForDayIdx(selectedWeek, dayIdx)}</span>
                             </th>
                         ))}
                     </tr>
                     <tr>
-                        {/* 產生每天下面的三個子標題 */}
                         {currentDays.map(d => (
                             <React.Fragment key={d + "-sub"}>
-                                <th className="p-1 text-[10px]">Class/Teacher</th>
-                                <th className="p-1 text-[10px]" style={{ width: '45px' }}>check-out</th>
-                                <th className="p-1 text-[10px]" style={{ width: '45px' }}>return</th>
+                                <th className="text-[11px] py-1 bg-[#fafafa]">Class/Teacher</th>
+                                <th className="text-[11px] py-1 bg-[#fafafa]" style={{ width: '40px' }}>check-out</th>
+                                <th className="text-[11px] py-1 bg-[#fafafa]" style={{ width: '40px' }}>return</th>
                             </React.Fragment>
                         ))}
                     </tr>
@@ -1278,28 +1510,26 @@
                 <tbody>
                     {periods.map(period => (
                         <tr key={period.id}>
-                            <td><strong>{period.name}</strong><br/><span style={{fontSize:'10px'}}>{period.time}</span></td>
+                            <td><strong className="text-[13px]">{period.name}</strong><br/><span className="text-[10px] text-gray-600">{period.time}</span></td>
                             {currentDays.map((day, dayIdx) => {
-                                // 如果是午休時間，合併3個欄位
                                 if (period.id === 'lunch') {
-                                    return <td key={dayIdx} colSpan="3" className="print-lunch font-bold text-center">Lunch Break / Noon Quiet Time</td>;
+                                    return <td key={dayIdx} colSpan="3" className="print-lunch font-bold text-center">Not Avaliable for Lunch / Noon Quiet Time</td>;
                                 }
                                 
                                 const booking = cartData[cartName].schedule[`w${selectedWeek}_d${dayIdx}_p${period.id}`];
                                 
-                                // 正常節次：產生 3 個 td (預約資訊、check-out 空白格、return 空白格)
                                 return (
                                     <React.Fragment key={dayIdx}>
-                                        <td className="text-left align-top p-1">
+                                        <td className="text-left align-top p-1.5 leading-tight">
                                             {booking ? (
                                                 <div>
-                                                    <span style={{fontSize:'11px'}}>{booking.className}</span><br/>
-                                                    <strong>{booking.name}</strong>
+                                                    <span className="text-[10px] text-gray-600">{booking.className}</span><br/>
+                                                    <strong className="text-[12px]">{booking.name}</strong>
                                                 </div>
                                             ) : ""}
                                         </td>
-                                        <td></td> {/* check-out 簽名格 */}
-                                        <td></td> {/* return 簽名格 */}
+                                        <td></td>
+                                        <td></td>
                                     </React.Fragment>
                                 );
                             })}
@@ -1307,7 +1537,10 @@
                     ))}
                 </tbody>
             </table>
-            <div className="mt-8 flex justify-between px-8 text-sm">
+            
+            <div className="mt-auto pt-3 pb-2 flex justify-between px-8 text-sm font-bold">
+                <p>Notes: _________________________________________</p>
+                <p>Admin Signature: _________________________</p>
             </div>
         </div>
     ))}
@@ -1318,8 +1551,10 @@
                         <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 z-50 backdrop-blur-sm no-print">
                             <div className="bg-white rounded-[2rem] border-2 border-duo-grayBorder shadow-2xl w-full max-w-sm overflow-hidden animate-[fadeIn_0.15s_ease-out]">
                                 <div className="p-6 border-b-2 border-duo-grayBorder text-center relative bg-duo-grayLight">
-                                    <h3 className="font-extrabold text-xl text-duo-text">{bookingModal.existingBooking ? 'Booking Details' : 'New Booking'}</h3>
-                                    <button onClick={() => setBookingModal({ isOpen: false, existingBooking: null })} className="absolute right-4 top-4 w-8 h-8 flex items-center justify-center bg-white border-2 border-duo-grayBorder rounded-full text-gray-400 hover:text-duo-text transition-colors">
+                                    <h3 className="font-extrabold text-xl text-duo-text">
+                                        {bookingModal.existingBooking ? 'Booking Details' : (bookingModal.isBatch ? 'Batch Booking' : 'New Booking')}
+                                    </h3>
+                                    <button onClick={() => setBookingModal({ isOpen: false, existingBooking: null, isBatch: false })} className="absolute right-4 top-4 w-8 h-8 flex items-center justify-center bg-white border-2 border-duo-grayBorder rounded-full text-gray-400 hover:text-duo-text transition-colors">
                                         <i className="fa-solid fa-times"></i>
                                     </button>
                                 </div>
@@ -1327,7 +1562,12 @@
                                     <div className="bg-blue-50 border-2 border-blue-100 rounded-2xl p-4 mb-6 text-sm font-extrabold text-duo-blue text-center">
                                         <i className="fa-solid fa-laptop-chromebook text-xl mb-1 block"></i>
                                         {selectedCart} <br/>
-                                        <span className="text-xs text-duo-blue/70">Wk {selectedWeek} • {currentDays[bookingModal.dayIdx]} • P{bookingModal.periodId}</span>
+                                        <span className="text-xs text-duo-blue/70">
+                                            {bookingModal.isBatch 
+                                                ? `Wk ${selectedWeek} • Booking ${batchSelection.length} Slots`
+                                                : `Wk ${selectedWeek} • ${currentDays[bookingModal.dayIdx]} • P${bookingModal.periodId}`
+                                            }
+                                        </span>
                                     </div>
                                     
                                     {bookingModal.existingBooking ? (
@@ -1368,7 +1608,7 @@
                                             {bookForm.classType === 'Other (Specify)' && <input type="text" value={bookForm.customClass} onChange={e => setBookForm({...bookForm, customClass: e.target.value})} placeholder="Specify Department" className="w-full px-4 py-3 bg-white border-2 border-duo-grayBorder rounded-xl focus:border-duo-blue outline-none font-bold text-duo-text" />}
                                             <div className="flex gap-3 pt-6">
                                                 <button onClick={() => setBookingModal({ isOpen: false })} className="flex-1 bg-white border-2 border-duo-grayBorder text-gray-400 font-extrabold uppercase py-4 rounded-2xl shadow-duo-gray active:shadow-none active:translate-y-[4px] transition-all tracking-wider">Cancel</button>
-                                                <button onClick={submitBooking} className="flex-[2] bg-duo-green text-white font-extrabold uppercase py-4 rounded-2xl shadow-[0_4px_0_0_#58a700] active:shadow-none active:translate-y-[4px] transition-all tracking-wider">Confirm</button>
+                                                <button onClick={checkConflictsAndSubmit} className="flex-[2] bg-duo-green text-white font-extrabold uppercase py-4 rounded-2xl shadow-[0_4px_0_0_#58a700] active:shadow-none active:translate-y-[4px] transition-all tracking-wider">Confirm</button>
                                             </div>
                                         </div>
                                     )}
@@ -1406,7 +1646,7 @@
 
                     {/* Alert Modal */}
                     {alertModal.isOpen && (
-                        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 z-[60] backdrop-blur-sm">
+                        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 z-[70] backdrop-blur-sm">
                             <div className="bg-white rounded-[2rem] border-2 border-duo-grayBorder shadow-2xl max-w-xs w-full p-8 text-center animate-[bounceIn_0.3s_cubic-bezier(0.175,0.885,0.32,1.275)]">
                                 <div className="w-20 h-20 bg-blue-50 text-duo-blue rounded-full flex items-center justify-center mx-auto mb-4 border-4 border-white shadow-sm">
                                     <i className="fa-solid fa-bell text-4xl"></i>
@@ -1420,7 +1660,7 @@
 
                     {/* Confirm Modal */}
                     {confirmModal.isOpen && (
-                        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 z-[60] backdrop-blur-sm">
+                        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 z-[70] backdrop-blur-sm">
                             <div className="bg-white rounded-[2rem] border-2 border-duo-grayBorder shadow-2xl max-w-sm w-full p-8 text-center animate-[bounceIn_0.3s_cubic-bezier(0.175,0.885,0.32,1.275)]">
                                 <div className="w-20 h-20 bg-red-50 text-duo-red rounded-full flex items-center justify-center mx-auto mb-4 border-4 border-white shadow-sm">
                                     <i className="fa-solid fa-triangle-exclamation text-4xl"></i>
