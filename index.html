@@ -693,9 +693,8 @@
         }
         .card-header::before { display: none; }
         .brand-lockup { display: flex; align-items: center; gap: 12px; }
-        .brand-logo { width: 52px; height: 52px; object-fit: contain; }
-        .brand-name, .brand-product { font-size: 14px; font-weight: 650; line-height: 1.35; }
-        .brand-product { color: var(--text-muted); font-weight: 500; }
+        .brand-logo { width: clamp(30px, 4vw, 42px); height: clamp(30px, 4vw, 42px); object-fit: contain; }
+        .brand-name { font-size: 14px; font-weight: 650; line-height: 1.35; white-space: nowrap; }
         .page-intro { min-width: 0; }
         .board-title {
             margin: 0 0 6px;
@@ -1045,8 +1044,8 @@
                 grid-template-columns: 1fr;
                 gap: 22px;
             }
-            .brand-logo { width: 44px; height: 44px; }
-            .brand-name, .brand-product { font-size: 13px; }
+            .brand-logo { width: 28px; height: 28px; }
+            .brand-name { font-size: 13px; }
             .board-title { font-size: 28px; }
             .board-subtitle { font-size: 15px; }
             #bulletin-board { margin-bottom: 14px; }
@@ -1295,10 +1294,7 @@
     <div class="card-header">
         <div class="brand-lockup">
             <img src="logo.png" alt="IBSH" class="brand-logo">
-            <div>
-                <div class="brand-name">IBSH PTA</div>
-                <div class="brand-product">Open Hour</div>
-            </div>
+            <div class="brand-name">IBSH PTA Open Hour</div>
         </div>
         <div class="page-intro">
             <h1 class="board-title">Book a teacher meeting</h1>
